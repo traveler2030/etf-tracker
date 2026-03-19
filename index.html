@@ -267,8 +267,9 @@ let curTab='portfolio', selCat='전체', apiOk=false, prevAlert={};
 let groupOpen={}, groupSort={}, gapHistory={};
 let updateTimer=null;
 const KAKAO_JS_KEY='8d783e767f921e7a57ff1aeacbbd99e1';
-const KAKAO_REST_KEY_DEFAULT='54df48b69f24113aed3f2e3cca6349cd';
+const KAKAO_REST_KEY='54df48b69f24113aed3f2e3cca6349cd';
 const SITE_URL=location.origin+location.pathname.replace(/\/$/,'');
+function getWorkerURL(){return localStorage.getItem('worker_url')||'https://kakao-proxy.YOUR_ID.workers.dev'}
 let kakaoOk=false;
 
 document.getElementById('threshInp').value=threshold;
@@ -598,7 +599,7 @@ function openKakaoSetup(){document.getElementById('kakaoModal').classList.add('s
 function closeKM(){document.getElementById('kakaoModal').classList.remove('show')}
 document.getElementById('kakaoModal').addEventListener('click',function(e){if(e.target===this)closeKM()});
 
-// REST key는 implicit grant에서 client_id로 사용
+// Kakao REST key used as client_id for OAuth
 
 function renderKS(){
   const el=document.getElementById('kBody');
@@ -607,19 +608,31 @@ function renderKS(){
     <div style="display:flex;gap:8px;justify-content:center;margin-bottom:10px"><button class="pbtn pri" onclick="testKakao()">📩 테스트 메시지 발송</button><button class="pbtn dan" onclick="disconnKakao()">연결 해제</button></div>
     <div style="background:var(--bg);padding:8px 10px;border-radius:7px;font-size:11px;color:var(--txt2)">모니터링: ${portfolio.length}개 ETF · 30초 갱신 · 동일 종목 30분 쿨다운</div></div>`;
   } else {
+    const wurl=localStorage.getItem('worker_url')||'';
     el.innerHTML=`<div style="text-align:center;padding:16px"><div style="font-size:48px;margin-bottom:12px">💬</div><h3 style="font-size:15px;margin-bottom:6px">카카오톡 알림 연결</h3><p style="font-size:12px;color:var(--txt2);margin-bottom:16px">로그인하면 괴리율 ±${threshold}% 초과 시<br>카카오톡으로 실시간 알림을 받을 수 있습니다.</p>
-    <button class="pbtn pri" onclick="connectKakao()" style="width:100%;padding:12px;background:#FEE500;color:#3C1E1E;border-color:#FEE500;font-weight:700;font-size:15px;border-radius:10px">💬 카카오톡으로 로그인</button>
+    <div style="text-align:left;margin-bottom:12px">
+      <label style="font-size:11px;color:var(--txt2);display:block;margin-bottom:4px">Worker URL (Cloudflare)</label>
+      <input id="workerInp" type="text" value="${wurl}" placeholder="https://kakao-proxy.xxx.workers.dev" style="width:100%;padding:8px 10px;border:1px solid var(--bdr);border-radius:7px;font-size:12px;font-family:Consolas,monospace;outline:none;background:var(--bg)">
+      <div style="font-size:10px;color:var(--txt3);margin-top:3px">Cloudflare Worker 배포 후 URL을 입력하세요</div>
+    </div>
+    <button class="pbtn pri" onclick="saveWorkerAndConnect()" style="width:100%;padding:12px;background:#FEE500;color:#3C1E1E;border-color:#FEE500;font-weight:700;font-size:15px;border-radius:10px">💬 카카오톡으로 로그인</button>
     <div class="knote" style="margin-top:12px">🔒 "나에게 보내기" API만 사용합니다.</div></div>`;
   }
 }
 
+function saveWorkerAndConnect(){
+  const inp=document.getElementById('workerInp');
+  if(inp){const v=inp.value.trim().replace(/\/$/,'');if(v){localStorage.setItem('worker_url',v)}}
+  connectKakao();
+}
 function connectKakao(){
+  const wu=getWorkerURL();
+  if(!wu||wu.includes('YOUR_ID')){alert('먼저 카톡알림 설정에서 Worker URL을 입력해주세요.');openKakaoSetup();return}
   const redirectUri=SITE_URL;
-  const authUrl='https://kauth.kakao.com/oauth/authorize?client_id='+KAKAO_REST_KEY_DEFAULT+'&redirect_uri='+encodeURIComponent(redirectUri)+'&response_type=token&scope=talk_message';
-  console.log('[Kakao] Auth URL:',authUrl);
+  const authUrl='https://kauth.kakao.com/oauth/authorize?client_id='+KAKAO_REST_KEY+'&redirect_uri='+encodeURIComponent(redirectUri)+'&response_type=code&scope=talk_message';
   window.location.href=authUrl;
 }
-function disconnKakao(){kakaoOk=false;localStorage.removeItem('kakao_on');localStorage.removeItem('kakao_token');document.getElementById('kakaoBtn').classList.remove('on');document.getElementById('kakaoBtn').innerHTML='📢 카톡알림';try{Kakao.Auth.setAccessToken(null)}catch{};renderKS()}
+function disconnKakao(){kakaoOk=false;localStorage.removeItem('kakao_on');localStorage.removeItem('kakao_token');localStorage.removeItem('kakao_refresh');document.getElementById('kakaoBtn').classList.remove('on');document.getElementById('kakaoBtn').innerHTML='📢 카톡알림';try{Kakao.Auth.setAccessToken(null)}catch{};renderKS()}
 let kakaoSentTime={};
 const KAKAO_COOLDOWN=1800000;// 같은 ETF 30분 쿨다운
 
@@ -660,13 +673,32 @@ async function sendKakao(etf,g){
     return false;
   }catch(e){
     console.warn('카톡 발송 에러:',e);
-    // 토큰 만료시 재로그인 안내
     if(e.code===-401||e.code===401){
+      // 토큰 만료 → refresh 시도
+      const refreshed=await refreshKakaoToken();
+      if(refreshed)return await sendKakao(etf,g);
       kakaoOk=false;localStorage.removeItem('kakao_on');localStorage.removeItem('kakao_token');
       document.getElementById('kakaoBtn').classList.remove('on');document.getElementById('kakaoBtn').innerHTML='📢 카톡알림';
     }
     return false;
   }
+}
+async function refreshKakaoToken(){
+  const rt=localStorage.getItem('kakao_refresh');
+  const wu=getWorkerURL();
+  if(!rt||wu.includes('YOUR_ID'))return false;
+  try{
+    const r=await fetch(wu+'/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:'grant_type=refresh_token&client_id='+KAKAO_REST_KEY+'&refresh_token='+rt});
+    const d=await r.json();
+    if(d.access_token){
+      localStorage.setItem('kakao_token',d.access_token);
+      if(d.refresh_token)localStorage.setItem('kakao_refresh',d.refresh_token);
+      try{Kakao.Auth.setAccessToken(d.access_token)}catch{}
+      return true;
+    }
+  }catch(e){console.warn('토큰 갱신 실패:',e)}
+  return false;
 }
 async function testKakao(){
   if(!kakaoOk){alert('카카오톡이 연결되지 않았습니다.');return}
@@ -679,19 +711,24 @@ async function testKakao(){
   }catch(e){alert('발송 실패: '+(e.msg||e.message||JSON.stringify(e))+'\n\n토큰이 만료되었을 수 있습니다.\n연결 해제 후 다시 로그인해주세요.')}
 }
 
-// ═══ Kakao OAuth Callback (Implicit Grant - token in URL hash) ═══
+// ═══ Kakao OAuth Callback (Authorization Code → Worker로 토큰교환) ═══
 (function handleKakaoCallback(){
   try{
-    // Implicit grant: token comes in URL hash #access_token=xxx&token_type=bearer
-    const hash=window.location.hash;
-    if(!hash||!hash.includes('access_token'))return;
-    const params=new URLSearchParams(hash.substring(1));
-    const token=params.get('access_token');
-    if(!token)return;
-    // Clean URL
-    window.history.replaceState({},'',window.location.pathname+window.location.search);
-    setKakaoConnected(token);
-    renderKS();alert('카카오톡 연결 성공!');
+    const params=new URLSearchParams(window.location.search);
+    const code=params.get('code');
+    if(!code)return;
+    window.history.replaceState({},'',window.location.pathname);
+    const wu=getWorkerURL();
+    if(wu.includes('YOUR_ID')){alert('Worker URL이 설정되지 않았습니다.');return}
+    const tokenBody='grant_type=authorization_code&client_id='+KAKAO_REST_KEY+'&redirect_uri='+encodeURIComponent(SITE_URL)+'&code='+code;
+    fetch(wu+'/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:tokenBody})
+    .then(r=>r.json()).then(data=>{
+      if(data.access_token){
+        setKakaoConnected(data.access_token);
+        if(data.refresh_token)localStorage.setItem('kakao_refresh',data.refresh_token);
+        renderKS();alert('카카오톡 연결 성공!');
+      }else{alert('카카오 로그인 실패:\n'+(data.error_description||data.error||JSON.stringify(data)))}
+    }).catch(e=>{alert('토큰 교환 실패: '+e.message)});
   }catch(e){console.error('Kakao callback:',e)}
 })();
 
@@ -704,9 +741,11 @@ try{if(typeof Kakao!=='undefined'){
     Kakao.API.request({url:'/v2/user/me',success:()=>{
       kakaoOk=true;document.getElementById('kakaoBtn').classList.add('on');document.getElementById('kakaoBtn').innerHTML='✅ 카톡 연결됨';
     },fail:()=>{
-      // Token expired - implicit grant has no refresh, clear and require re-login
-      localStorage.removeItem('kakao_on');localStorage.removeItem('kakao_token');
-      try{Kakao.Auth.setAccessToken(null)}catch{}
+      // 토큰 만료 → refresh 시도
+      refreshKakaoToken().then(ok=>{
+        if(ok){kakaoOk=true;document.getElementById('kakaoBtn').classList.add('on');document.getElementById('kakaoBtn').innerHTML='✅ 카톡 연결됨'}
+        else{localStorage.removeItem('kakao_on');localStorage.removeItem('kakao_token');localStorage.removeItem('kakao_refresh');try{Kakao.Auth.setAccessToken(null)}catch{}}
+      });
     }});
   }
 }}catch{}
