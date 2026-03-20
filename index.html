@@ -251,7 +251,7 @@ const PX=[u=>'https://api.codetabs.com/v1/proxy/?quest='+encodeURIComponent(u),u
 function ft(u,ms){const c=new AbortController;const t=setTimeout(()=>c.abort(),ms);return fetch(u,{signal:c.signal}).finally(()=>clearTimeout(t))}
 async function fp(u){try{const r=await ft(u,4000);if(r.ok)return r}catch{}for(const mk of PX){try{const r=await ft(mk(u),12000);if(r.ok)return r}catch{}}throw new Error('Fetch failed')}
 const API={
-  async list(){const r=await fp('https://finance.naver.com/api/sise/etfItemList.nhn?etfType=0&targetColumn=market_sum&sortOrder=desc&pageSize=500');const b=await r.arrayBuffer();let t;try{t=new TextDecoder('euc-kr').decode(b)}catch{t=new TextDecoder('utf-8').decode(b)}return JSON.parse(t).result?.etfItemList||[]},
+  async list(){const r=await fp('https://finance.naver.com/api/sise/etfItemList.nhn?etfType=0&targetColumn=market_sum&sortOrder=desc&pageSize=2000');const b=await r.arrayBuffer();let t;try{t=new TextDecoder('euc-kr').decode(b)}catch{t=new TextDecoder('utf-8').decode(b)}return JSON.parse(t).result?.etfItemList||[]},
   async quotes(codes){if(!codes.length)return{};const q=codes.map(c=>'SERVICE_ITEM:'+c).join('|');const r=await fp('https://polling.finance.naver.com/api/realtime?query='+q);const d=await r.json();const R={};d.result?.areas?.forEach(a=>a.datas?.forEach(x=>{R[x.cd]=x}));return R},
   async detail(code){const r=await fp('https://m.stock.naver.com/api/stock/'+code+'/integration');return await r.json()}
 };
@@ -310,7 +310,7 @@ async function loadList(){
   try{
     const list=await API.list();if(!list.length)return;
     const prev={};allETFs.forEach(e=>{prev[e.code]=e});
-    allETFs=list.map(e=>{const c=e.itemcode,p=prev[c],d=etfDetails[c];return{code:c,name:e.itemname,nav:e.nav||0,mp:e.nowVal||0,cv:e.changeVal||0,cr:e.changeRate||0,rf:e.risefall,vol:e.quant||0,aum:e.marketSum||0,cat:'',ul:'',iss:p?.iss||'',fee:d?.totalFee||(p?p.fee:0),feeOk:d?._ts?true:(p?p.feeOk:false)}});
+    allETFs=list.map(e=>{const c=e.itemcode,p=prev[c],d=etfDetails[c];const dn=e.risefall==='4'||e.risefall==='5'||e.risefall===4||e.risefall===5;const cv=Math.abs(e.changeVal||0)*(dn?-1:1);const cr=Math.abs(e.changeRate||0)*(dn?-1:1);return{code:c,name:e.itemname,nav:e.nav||0,mp:e.nowVal||0,cv:cv,cr:cr,rf:e.risefall,vol:e.quant||0,aum:e.marketSum||0,cat:'',ul:'',iss:p?.iss||'',fee:d?.totalFee||(p?p.fee:0),feeOk:d?._ts?true:(p?p.feeOk:false)}});
     allETFs.forEach(e=>{e.cat=catETF(e.name);e.ul=guessUL(e.name);if(!e.iss)e.iss=guessIssuer(e.name)});
     apiOk=true;setStatus(true,allETFs.length+'개 ETF');
   }catch(e){console.warn('List:',e.message);if(!allETFs.length)setStatus(false,'연결 실패')}
@@ -340,7 +340,11 @@ async function loadFeesForPF(){
 }
 async function loadQuotes(){
   if(!portfolio.length)return;
-  try{for(let i=0;i<portfolio.length;i+=40){const q=await API.quotes(portfolio.slice(i,i+40));Object.entries(q).forEach(([c,d])=>{const e=allETFs.find(x=>x.code===c);if(e&&d){if(d.nv)e.mp=d.nv;if(d.aq)e.vol=d.aq;if(d.cv)e.cv=d.cv;if(d.cr)e.cr=d.cr;if(d.nav)e.nav=d.nav}})}}catch{}
+  // 포트폴리오 + 유사 ETF 모두 실시간 갱신
+  const codes=new Set(portfolio);
+  portfolio.forEach(c=>{const e=allETFs.find(x=>x.code===c);if(!e)return;allETFs.filter(x=>x.ul===e.ul).forEach(p=>codes.add(p.code))});
+  const codeArr=[...codes];
+  try{for(let i=0;i<codeArr.length;i+=40){const q=await API.quotes(codeArr.slice(i,i+40));Object.entries(q).forEach(([c,d])=>{const e=allETFs.find(x=>x.code===c);if(e&&d){if(d.nv)e.mp=d.nv;if(d.aq)e.vol=d.aq;const dn=d.rf==='4'||d.rf==='5'||d.rf===4||d.rf===5;if(d.cv!==undefined){e.cv=Math.abs(d.cv)*(dn?-1:1)}if(d.cr!==undefined){e.cr=Math.abs(d.cr)*(dn?-1:1)}if(d.rf!==undefined)e.rf=d.rf;if(d.nav)e.nav=d.nav}})}}catch{}
 }
 function setStatus(ok,msg){apiOk=ok;const s=document.getElementById('apiSpin');if(s)s.style.display='none';const b=document.getElementById('apiBadge');if(b){b.className='badge '+(ok?'badge-ok':'badge-err');b.innerHTML=(ok?'&#9679; ':'&#9888; ')+msg}const d=document.getElementById('sDot');if(d)d.className='sdot'+(ok?'':' err')}
 
